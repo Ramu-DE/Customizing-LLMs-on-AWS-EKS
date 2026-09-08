@@ -31,6 +31,20 @@ Every post includes:
 
 ---
 
+## Week 2 — GPU & Memory
+
+| Day | Title | Core Concept |
+|-----|-------|-------------|
+| [Day 8](./week-2/day-08-why-gpus-are-critical.md) | Why GPUs Are Critical for LLM Inference | LLMs are parallel matrix math — GPUs are built exactly for that. |
+| [Day 9](./week-2/day-09-gpu-memory-bottleneck.md) | GPU Memory: The Real Bottleneck | Memory bandwidth matters more than FLOPS for decode. |
+| [Day 10](./week-2/day-10-kv-cache-explained.md) | KV Cache Explained | The hidden structure that makes O(n²) generation O(1). |
+| [Day 11](./week-2/day-11-why-long-context-is-expensive.md) | Why Long Context Is Expensive | 128K context = 62,500× more attention work than 512 tokens. |
+| [Day 12](./week-2/day-12-quantization.md) | Quantization | FP32 → FP16 → INT8 → INT4: half the memory, same model. |
+| [Day 13](./week-2/day-13-model-size-vs-inference-cost.md) | Model Size vs Inference Cost | A fine-tuned 7B model often beats a generic 70B at 10% of the cost. |
+| [Day 14](./week-2/day-14-gpu-utilization-vs-good-inference.md) | GPU Utilization ≠ Good Inference | 90% GPU util with bad economics is not a success. |
+
+---
+
 ## Connection to This Workshop
 
 Everything in this series maps directly to what we built:
