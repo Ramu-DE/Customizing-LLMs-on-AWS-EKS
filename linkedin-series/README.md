@@ -45,6 +45,30 @@ Every post includes:
 
 ---
 
+## Week 3 — Making Inference Fast
+
+| Day | Title | Core Concept |
+|-----|-------|-------------|
+| [Day 15](./week-3/day-15-continuous-batching.md) | Continuous Batching | Mix prefill + decode across requests every GPU step. 10× naive throughput. |
+| [Day 16](./week-3/day-16-paged-attention.md) | PagedAttention | Virtual memory for KV cache. 24× more concurrent requests. |
+| [Day 17](./week-3/day-17-speculative-decoding.md) | Speculative Decoding | Draft small, verify in parallel. 2-4× decode speedup, zero quality loss. |
+| [Day 18](./week-3/day-18-flash-attention.md) | FlashAttention | IO-aware tiled attention. Never writes n×n matrix to VRAM. |
+| [Day 19](./week-3/day-19-prefix-caching.md) | Prefix Caching | Cache KV for repeated prefixes. 96% TTFT reduction on cache hits. |
+| [Day 20](./week-3/day-20-dynamic-batching.md) | Dynamic Batching | Adapt batch size to traffic. Find the throughput-latency knee. |
+| [Day 21](./week-3/day-21-inference-throughput.md) | Inference Throughput | Tokens/sec is the new infrastructure unit. All optimizations compound to 35×. |
+
+### Week 3 Reference Images
+
+| Image | Used In |
+|-------|---------|
+| [Inference Server Architecture](./week-3/images/inference-server-architecture.jpg) | Day 15 (Continuous Batching), Day 20 (Dynamic Batching) |
+| [Inference Engine Diagram](./week-3/images/inference-survey.jpg) | Day 16 (PagedAttention), Day 18 (FlashAttention) |
+| [LLM Gateway Flow](./week-3/images/llm-gateway-flow.jpg) | Day 19 (Prefix Caching) |
+| [AI Infrastructure for Agents](./week-3/images/ai-infra-for-agents.jpg) | Day 21 (Inference Throughput) |
+| [Reduce LLM Cost](./week-3/images/reduce-llm-cost.jpg) | Day 21 (Inference Throughput) |
+
+---
+
 ## Connection to This Workshop
 
 Everything in this series maps directly to what we built:
