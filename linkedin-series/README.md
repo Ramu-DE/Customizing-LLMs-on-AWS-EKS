@@ -80,6 +80,8 @@ Every post includes:
 | [Day 26](./week-4/day-26-kv-cache-offloading.md) | KV Cache Offloading with LMCache | GPU VRAM → CPU RAM → Valkey hierarchy. 95% TTFT reduction on cache hits. |
 | [Day 27](./week-4/day-27-lora-serving-at-scale.md) | Serving LoRA Adapters at Scale | One GPU serves 50+ fine-tuned adapters. 88% cost reduction vs dedicated servers. |
 | [Day 28](./week-4/day-28-rag-vs-finetuning.md) | RAG vs Fine-tuning: Production Guide | RAG for dynamic knowledge. Fine-tuning for behavior. Decision framework for production. |
+| [Day 29](./week-4/day-29-complete-production-stack.md) | The Complete Production LLM Stack | Every layer assembled: Ray Serve + vLLM + LMCache + RAG + LoRA + Karpenter + Grafana. |
+| [Day 30](./week-4/day-30-whats-next.md) | What's Next: The Future of LLM Inference | Disaggregated prefill/decode, KV compression, EAGLE-2, new hardware, agentic workloads. |
 
 ---
 
