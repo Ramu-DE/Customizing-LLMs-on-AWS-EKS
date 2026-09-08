@@ -59,14 +59,18 @@ dataset = Dataset.from_list(records)
 print(f"  Loaded {len(dataset)} training examples")
 
 # Step 3: Load tokenizer
+# The Ministral-3-8B model uses the Tekken tokenizer (Mistral-native format).
+# MistralCommonBackend is the correct class for this tokenizer.
+# We load from HF Hub (not local) because the local S3 copy uses tekken.json
+# format that requires mistral-common's Hub-integrated loader.
 print("\n[3/8] Loading tokenizer...")
 try:
     from transformers import MistralCommonBackend
-    tokenizer = MistralCommonBackend.from_pretrained(MODEL_PATH, local_files_only=True, mode="finetuning")
-    print("  Using MistralCommonBackend tokenizer")
+    tokenizer = MistralCommonBackend.from_pretrained(HF_MODEL_ID, mode="finetuning")
+    print("  Using MistralCommonBackend tokenizer (from HF Hub)")
 except Exception as e:
-    print(f"  Fallback to AutoTokenizer ({e})")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True, local_files_only=True)
+    print(f"  Fallback to AutoTokenizer from Hub ({e})")
+    tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_ID, trust_remote_code=True)
 
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token

@@ -22,7 +22,7 @@ spec:
         karpenter.sh/nodepool: gpu
       containers:
         - name: trainer
-          image: 763104351884.dkr.ecr.${AWS_REGION}.amazonaws.com/pytorch-training:2.8.0-gpu-py312-cu129-ubuntu22.04-ec2
+          image: 763104351884.dkr.ecr.us-east-2.amazonaws.com/pytorch-training:2.8.0-gpu-py312-cu129-ubuntu22.04-ec2
           command:
             - /bin/bash
             - -c
@@ -44,7 +44,7 @@ spec:
             - name: OUTPUT_DIR
               value: "/output/anyvc-startup-lora"
             - name: S3_OUTPUT_PATH
-              value: "s3://${S3_BUCKET_NAME}/anyvc-startup-lora/"
+              value: "s3://genai-models-897729120158/anyvc-startup-lora/"
             - name: NUM_EPOCHS
               value: "5"
             - name: BATCH_SIZE
@@ -59,6 +59,8 @@ spec:
               value: "16"
             - name: LORA_ALPHA
               value: "32"
+            - name: AWS_REGION
+              value: "us-east-2"
           resources:
             requests:
               cpu: "3"
