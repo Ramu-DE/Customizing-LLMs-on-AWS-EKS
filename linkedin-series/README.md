@@ -69,6 +69,20 @@ Every post includes:
 
 ---
 
+## Week 4 — Scaling Beyond One GPU
+
+| Day | Title | Core Concept |
+|-----|-------|-------------|
+| [Day 22](./week-4/day-22-tensor-parallelism.md) | Tensor Parallelism | Split weight matrices across GPUs. Enables 70B+ models on multi-GPU nodes. |
+| [Day 23](./week-4/day-23-pipeline-parallelism.md) | Pipeline Parallelism | Assign layers to different GPUs in sequence. Crosses node boundaries with InfiniBand. |
+| [Day 24](./week-4/day-24-ray-serve-autoscaling.md) | Ray Serve for LLM Autoscaling | Orchestrates vLLM replicas. Autoscales on demand. Zero-downtime rolling updates. |
+| [Day 25](./week-4/day-25-multi-node-inference.md) | Multi-node Inference | TP within node (NVLink) + PP across nodes (EFA). Required for 405B+ scale. |
+| [Day 26](./week-4/day-26-kv-cache-offloading.md) | KV Cache Offloading with LMCache | GPU VRAM → CPU RAM → Valkey hierarchy. 95% TTFT reduction on cache hits. |
+| [Day 27](./week-4/day-27-lora-serving-at-scale.md) | Serving LoRA Adapters at Scale | One GPU serves 50+ fine-tuned adapters. 88% cost reduction vs dedicated servers. |
+| [Day 28](./week-4/day-28-rag-vs-finetuning.md) | RAG vs Fine-tuning: Production Guide | RAG for dynamic knowledge. Fine-tuning for behavior. Decision framework for production. |
+
+---
+
 ## Connection to This Workshop
 
 Everything in this series maps directly to what we built:
@@ -82,6 +96,13 @@ KV cache optimization       ──▶  400-lmcache/
 Token-level efficiency      ──▶  300-benchmarking/ + 400-lmcache/
 TTFT / TPOT metrics         ──▶  300-benchmarking/ (Grafana dashboards)
 Latency root causes         ──▶  All modules
+Tensor/Pipeline Parallelism ──▶  800-ray/ (multi-GPU vLLM config)
+Ray Serve autoscaling       ──▶  800-ray/ (RayService CRD)
+Multi-node inference        ──▶  800-ray/ (multi-worker Ray cluster)
+KV cache offloading         ──▶  400-lmcache/ (CPU RAM + Valkey)
+LoRA serving at scale       ──▶  600-finetuning/ (vllm-with-lora.yaml)
+RAG pipeline                ──▶  700-rag/ (S3 Vectors + embeddings)
+RAG vs Fine-tuning          ──▶  600-finetuning/ + 700-rag/
 ```
 
 ---
