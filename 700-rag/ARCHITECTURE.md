@@ -1,319 +1,404 @@
-# Module 700 – RAG Pipeline Architecture
+# Module 700 – RAG: Grounding AI Inference with Your Own Data
 
-> Implements a Retrieval-Augmented Generation (RAG) pipeline using Amazon S3 Vectors as the vector database. Documents are embedded with `sentence-transformers`, stored in an S3 vector index, and queried at inference time to provide relevant context to the Ministral-3-8B model. A Gradio web UI provides a public-facing interface.
+> New to AI inference? Read [CONCEPTS.md](../CONCEPTS.md) first.
+> Prerequisite: Module 100 (vLLM) must be running.
 
 ---
 
-## End-to-End Architecture
+## What This Module Does
+
+The Ministral-3-8B model was trained on data up to a certain date. It knows general knowledge, but it does not know:
+- Your company's products and prices
+- Your internal policies
+- Recent news or events
+- Domain-specific documents you have collected
+
+**Retrieval-Augmented Generation (RAG)** solves this by searching your documents at query time and passing the relevant ones to the model as context.
+
+This module builds a complete RAG pipeline for a consumer electronics Q&A system, using Amazon S3 Vectors as the vector database and a Gradio web interface.
+
+---
+
+## AI Inference Concepts Demonstrated Here
+
+### What is RAG? (Plain English)
+
+Think of RAG like an "open-book exam" for the AI:
+
+```
+Closed-book (standard inference):
+  Examiner: "What is the best 4K TV under $800 in 2026?"
+  Student (model): Answers from memory. Training cutoff = uncertain.
+  Problem: Training data may be outdated. May hallucinate products.
+
+Open-book (RAG inference):
+  Examiner: "What is the best 4K TV under $800 in 2026?"
+  System: Searches the electronics catalog. Finds 3 relevant entries.
+  System: Puts those entries in front of the student (model).
+  Student: "Based on our catalog, the LG C3 OLED at $749..."
+  Benefit: Answer grounded in actual current data. No hallucination.
+```
+
+### The 4-Step RAG Process
+
+```
+Phase 1 (one-time, offline): DOCUMENT INGESTION
+─────────────────────────────────────────────────
+Your documents
+  → Split into chunks (200-512 tokens each)
+  → Embed each chunk (convert text to a list of numbers)
+  → Store (chunk text + embedding vector) in S3 Vectors
+
+Phase 2 (real-time, per query): RETRIEVAL + GENERATION
+────────────────────────────────────────────────────────
+User question
+  → Embed the question (same embedding model)
+  → Search S3 Vectors for most similar chunks
+  → Top-K chunks retrieved (e.g., K=3)
+  → Add chunks to the prompt as context
+  → Send augmented prompt to vLLM
+  → Model generates answer grounded in retrieved context
+  → Return answer to user
+```
+
+### What is an Embedding?
+
+An embedding converts text into a list of numbers (a vector) that captures meaning:
+
+```
+Text → Embedding Model → Vector (list of ~384 numbers)
+
+"OLED television"  → [0.12, -0.34, 0.56, 0.21, ...]   (384 dimensions)
+"TV display panel" → [0.11, -0.31, 0.58, 0.19, ...]   (very similar!)
+"Python tutorial"  → [-0.45, 0.78, -0.12, 0.34, ...]  (very different)
+
+The numbers capture MEANING, not just characters.
+Similar meanings → similar vectors → close in vector space
+```
+
+Similarity between vectors is measured by **cosine similarity** (angle between vectors):
+- 1.0 = identical meaning
+- 0.0 = completely unrelated
+- -1.0 = opposite meaning (rare in practice)
+
+### Amazon S3 Vectors – Vector Database Built Into S3
+
+Traditional RAG uses a separate vector database (Pinecone, Weaviate, pgvector, etc.) which adds infrastructure complexity.
+
+Amazon S3 Vectors is a native vector search capability built directly into Amazon S3:
+- No separate server to manage
+- Serverless (no running cost when idle)
+- Scales automatically
+- IAM-integrated access control
+- Data stays in your S3 environment
+
+---
+
+## Full Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                        EKS Cluster – default namespace                        │
+│  EKS Cluster – default namespace                                              │
 │                                                                               │
-│  PHASE 1: Document Ingestion (one-time job)                                  │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Job: rag-document-processor  (batch/v1)                              │   │
-│  │  serviceAccount: s3-access-sa                                         │   │
-│  │  image: python:3.11-slim                                               │   │
-│  │                                                                       │   │
-│  │  1. Reads: electronics.jsonl (sample document corpus)                │   │
-│  │  2. Embeds: sentence-transformers (all-MiniLM-L6-v2 or similar)      │   │
-│  │  3. Stores: embeddings → S3 Vector Index                             │   │
-│  │                                                                       │   │
-│  │  Dependencies:                                                        │   │
-│  │    boto3==1.43.43                                                     │   │
-│  │    torch==2.13.0+cpu (CPU-only, no GPU needed for embedding)          │   │
-│  │    sentence-transformers==5.6.0                                       │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                │                                              │
-│                                ▼                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Amazon S3 Vector Index                                               │   │
-│  │  Bucket: ${S3_VECTOR_BUCKET_NAME}                                    │   │
-│  │  Index:  ${S3_VECTOR_INDEX_NAME}                                     │   │
-│  │  Region: ${AWS_REGION}                                               │   │
-│  │  Stores: (doc_id, embedding_vector, metadata, text_chunk)            │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                │                                              │
-│  PHASE 2: Inference (real-time)│                                              │
-│                                ▼                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Deployment: rag-service  (FastAPI)                                   │   │
-│  │  serviceAccount: s3-access-sa                                         │   │
-│  │  image: python:3.11-slim                                               │   │
-│  │  Port: 8080  |  replicas: 1                                           │   │
-│  │  nodeSelector: (default – system node)                                │   │
-│  │                                                                       │   │
-│  │  Dependencies:                                                        │   │
-│  │    boto3==1.43.44           S3 Vectors API                           │   │
-│  │    sentence_transformers==5.6.0  Query embedding                     │   │
-│  │    fastapi==0.139.0         REST API framework                        │   │
-│  │    uvicorn==0.51.0          ASGI server                               │   │
-│  │    aiohttp==3.14.1          Async HTTP (vLLM calls)                  │   │
-│  │                                                                       │   │
-│  │  ENV:                                                                 │   │
-│  │    ACCOUNT_ID              AWS account ID                            │   │
-│  │    S3_VECTOR_BUCKET_NAME   S3 bucket with vector index               │   │
-│  │    S3_VECTOR_INDEX_NAME    Name of the S3 vector index               │   │
-│  │    MODEL_ID                ministral                                  │   │
-│  │    MODEL_ENDPOINT          http://vllm-serve-svc:8000/v1             │   │
-│  │    AWS_REGION              us-east-1                                  │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                │                                              │
-│   Service: rag-service (ClusterIP, port 80 → 8080)                          │
-│                                │                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Deployment: rag-gradio-interface  (Gradio UI)                        │   │
-│  │  image: python:3.11-slim                                               │   │
-│  │  Port: 7860  |  nodeSelector: m5.xlarge                               │   │
-│  │                                                                       │   │
-│  │  Dependencies:                                                        │   │
-│  │    gradio==5.49.1   requests==2.33.1   pandas==2.3.3                 │   │
-│  │                                                                       │   │
-│  │  ENV:                                                                 │   │
-│  │    RAG_SERVICE_HOST = rag-service                                    │   │
-│  │    RAG_SERVICE_PORT = 80                                              │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                │                                              │
-│   Service: rag-gradio-interface (ClusterIP, port 80 → 7860)                 │
-│   Ingress: rag-gradio-alb (ALB, internet-facing)                            │
+│  ─── PHASE 1: Document Ingestion (run once) ──────────────────────────────  │
 │                                                                               │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  GPU Node Pool – Pod: mistral (vLLM, Module 100)                     │   │
-│  │  Service: vllm-serve-svc:8000                                        │   │
+│  │  Job: rag-document-processor                                          │   │
+│  │  Image: python:3.11-slim (CPU only – no GPU needed for embedding)    │   │
+│  │  ServiceAccount: s3-access-sa                                         │   │
+│  │                                                                       │   │
+│  │  1. Read: electronics.jsonl (22 KB, 25 product documents)            │   │
+│  │  2. Embed: sentence-transformers (384-dim vectors, CPU)              │   │
+│  │  3. Store: S3 Vectors API → vector index                             │   │
+│  │                                                                       │   │
+│  │  Resources: { cpu: "1-2", memory: "2-4Gi" } (CPU-only)              │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
+│                                   │ put_vectors()                            │
+│                                   ▼                                          │
+│  ─── PHASE 2: Real-time Inference ─────────────────────────────────────── │
+│                                                                               │
+│  User                                                                        │
+│   ▼ browser                                                                  │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Deployment: rag-gradio-interface (m5.xlarge CPU node)               │   │
+│  │  Image: python:3.11-slim  Port: 7860  Deps: gradio==5.49.1           │   │
+│  │                                                                       │   │
+│  │  ENV: RAG_SERVICE_HOST=rag-service  RAG_SERVICE_PORT=80             │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│   │ Ingress: rag-gradio-alb (ALB, internet-facing)                          │
+│   │ POST http://rag-service:80/query                                        │
+│   ▼                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Deployment: rag-service (FastAPI)  Port: 8080                        │   │
+│  │  ServiceAccount: s3-access-sa (S3 Vectors access)                    │   │
+│  │                                                                       │   │
+│  │  1. Embed query → 384-dim vector                                     │   │
+│  │  2. query_vectors() → top-3 documents from S3 Vectors               │   │
+│  │  3. Build augmented prompt (question + context)                       │   │
+│  │  4. POST /v1/chat/completions → vLLM                                 │   │
+│  │  5. Return answer + source documents                                  │   │
+│  │                                                                       │   │
+│  │  Deps: boto3, sentence_transformers, fastapi, aiohttp                │   │
+│  │  Resources: { cpu: "2", memory: "4Gi" }                              │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│   │ POST /v1/chat/completions                                               │
+│   ▼                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  GPU Node: mistral vLLM Deployment (Module 100)                       │   │
+│  │  Generates the final answer using retrieved context                   │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                               │
+│  Amazon S3 Vectors                                                           │
+│  Bucket: ${S3_VECTOR_BUCKET_NAME}                                            │
+│  Index:  ${S3_VECTOR_INDEX_NAME}                                             │
+│  Stores: 25 product embeddings (384-dim float32 vectors + metadata)         │
 └──────────────────────────────────────────────────────────────────────────────┘
-
-Internet
-  │
-  ▼ HTTP
-┌──────────────────────┐
-│  ALB: rag-gradio-alb  │  ← http://<ALB_DNS>
-│  inbound: 0.0.0.0/0  │
-└──────────────────────┘
 ```
 
 ---
 
-## RAG Query Flow (Real-time)
+## RAG Query Flow (Step-by-Step)
 
 ```
-User types question: "What are the best OLED TV recommendations under $1000?"
-        │
-        ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  Gradio UI (port 7860)                                                │
-│  POST http://rag-service:80/query { "question": "..." }              │
-└──────────────────────────────────────────────────────────────────────┘
-        │
-        ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  RAG Service (rag_serve.py)                                           │
-│                                                                       │
-│  Step 1: Embed the query                                             │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  sentence_transformers.encode("What are the best OLED...")   │   │
-│  │  Output: float32 vector of dimension D (e.g., 384-dim)       │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                       │
-│  Step 2: Vector similarity search (S3 Vectors)                       │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  boto3 s3vectors client                                       │   │
-│  │  query_vectors(                                               │   │
-│  │    vectorBucketName = S3_VECTOR_BUCKET_NAME,                  │   │
-│  │    indexName        = S3_VECTOR_INDEX_NAME,                   │   │
-│  │    queryVector      = [0.12, -0.34, 0.56, ...],              │   │
-│  │    topK             = 3,                                      │   │
-│  │    returnMetadata   = True                                    │   │
-│  │  )                                                            │   │
-│  │  Returns: top-3 document chunks by cosine similarity         │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                       │
-│  Step 3: Build augmented prompt                                       │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  context = "\n".join([doc.text for doc in top3_docs])        │   │
-│  │  augmented_prompt = f"""                                      │   │
-│  │    Context: {context}                                         │   │
-│  │                                                               │   │
-│  │    Question: {user_question}                                  │   │
-│  │                                                               │   │
-│  │    Answer based on the context above:                        │   │
-│  │  """                                                          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                       │
-│  Step 4: LLM generation                                               │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  aiohttp POST http://vllm-serve-svc:8000/v1/chat/completions │   │
-│  │  {                                                            │   │
-│  │    "model": "ministral",                                      │   │
-│  │    "messages": [{"role":"user","content": augmented_prompt}] │   │
-│  │  }                                                            │   │
-│  │  Returns: streamed response text                              │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────────┘
-        │
-        ▼
-Gradio UI renders the response with retrieved document sources
-```
+User: "Which TVs have good HDR performance under $1000?"
 
----
+Step 1 – Query Embedding (rag-service)
+───────────────────────────────────────
+sentence_transformers.encode("Which TVs have good HDR performance under $1000?")
+→ [0.15, -0.22, 0.48, ..., 0.31]   (384 numbers)
+Time: ~20ms on CPU (sentence-transformers is fast)
 
-## Document Ingestion Flow (One-time Job)
+Step 2 – Vector Search (S3 Vectors API)
+────────────────────────────────────────
+boto3 s3vectors client:
+query_vectors(
+  vectorBucketName = "rag-vectors-<ACCOUNT_ID>",
+  indexName        = "electronics-index",
+  queryVector      = {"float32": [0.15, -0.22, ...]},
+  topK             = 3,                    ← Return top 3 most similar
+  returnMetadata   = True                  ← Include original text in response
+)
 
-```
-File: electronics.jsonl (22 KB sample corpus)
-Format: JSONL, one document per line
-Domain: Consumer electronics product data/reviews
+S3 Vectors computes cosine similarity between query vector
+and all stored product vectors. Returns top 3 matches:
 
-┌──────────────────────────────────────────────────────────────────────┐
-│  rag-document-processor Job (rag-processor.py)                        │
-│                                                                       │
-│  1. Read documents from electronics.jsonl                            │
-│     Each line: { "id": "...", "text": "...", "metadata": {...} }     │
-│                                                                       │
-│  2. Chunk documents (if long)                                         │
-│     Split at sentence boundaries, ~200–512 tokens per chunk          │
-│                                                                       │
-│  3. Embed each chunk                                                  │
-│     sentence_transformers.encode(chunks)                             │
-│     Model: all-MiniLM-L6-v2 (384 dimensions, CPU-only)              │
-│     Batch embedding for efficiency                                    │
-│                                                                       │
-│  4. Upload to S3 Vector Index                                         │
-│     boto3 s3vectors.put_vectors(                                     │
-│       vectorBucketName = S3_VECTOR_BUCKET_NAME,                      │
-│       indexName        = S3_VECTOR_INDEX_NAME,                       │
-│       vectors = [                                                     │
-│         { "key": "doc_001_chunk_0",                                  │
-│           "data": {"float32": [0.12, -0.34, ...]},                  │
-│           "metadata": {"text": "chunk text...", "source": "..."}     │
-│         },                                                            │
-│         ...                                                           │
-│       ]                                                               │
-│     )                                                                 │
-│                                                                       │
-│  Resources:                                                           │
-│    requests: { cpu: "1",  memory: "2Gi" }                            │
-│    limits:   { cpu: "2",  memory: "4Gi" }                            │
-│    (No GPU required – CPU embedding only)                            │
-└──────────────────────────────────────────────────────────────────────┘
+Match 1 (score: 0.91): LG C3 OLED 55" – $749
+  "Exceptional HDR performance with Dolby Vision IQ and HDR10+..."
+
+Match 2 (score: 0.87): Sony A80L OLED 55" – $899
+  "Outstanding HDR with XR OLED Contrast Pro, 800 nits peak brightness..."
+
+Match 3 (score: 0.83): Samsung QN90C QLED 65" – $997
+  "Quantum HDR 32× with Neo QLED, 2000 nits peak brightness..."
+
+Step 3 – Prompt Augmentation (rag-service)
+──────────────────────────────────────────
+augmented_prompt = f"""
+You are a helpful electronics advisor. Answer the user's question
+using ONLY the provided product information. If the answer is not
+in the context, say so.
+
+Product Information:
+──────────────────
+{match1.text}
+{match2.text}
+{match3.text}
+──────────────────
+
+User Question: Which TVs have good HDR performance under $1000?
+"""
+
+Step 4 – LLM Generation (vLLM)
+────────────────────────────────
+POST http://vllm-serve-svc:8000/v1/chat/completions
+{
+  "model": "ministral",
+  "messages": [
+    {"role": "user", "content": augmented_prompt}
+  ]
+}
+
+Step 5 – Response
+──────────────────
+"Based on our catalog, three excellent HDR TVs under $1000:
+
+1. LG C3 OLED 55" ($749): Best value HDR with Dolby Vision IQ
+   and HDR10+. OLED technology delivers perfect blacks...
+
+2. Sony A80L OLED 55" ($899): Premium HDR with XR OLED Contrast Pro,
+   800 nits peak brightness...
+
+3. Samsung QN90C QLED 65" ($997): Brightest option at 2000 nits
+   peak brightness, ideal for well-lit rooms..."
 ```
 
 ---
 
-## Amazon S3 Vectors
+## Document Ingestion Job (rag-document-job.yml)
 
-```
-Amazon S3 Vectors (new AWS service):
-  A native vector database built into S3.
-  No separate vector DB infrastructure to manage.
-  Scales automatically with S3 storage.
+```yaml
+Job: rag-document-processor
+  serviceAccount: s3-access-sa        # Needs S3 Vectors write permission
+  backoffLimit: 2                     # Retry up to 2 times on failure
+  restartPolicy: Never                # Each attempt starts fresh
 
-Configuration:
-  vectorBucketName: ${S3_VECTOR_BUCKET_NAME}
-  indexName:        ${S3_VECTOR_INDEX_NAME}
+Container image: python:3.11-slim
+Install commands:
+  apt-get install curl python3-dev build-essential
+  # build-essential needed to compile some sentence_transformers dependencies
 
-Operations used:
-  put_vectors()    → store embeddings during ingestion
-  query_vectors()  → similarity search at inference time
+  pip install boto3==1.43.43
+  # AWS SDK: for S3 Vectors API calls (put_vectors)
 
-Key advantages over self-managed vector DBs:
-  - No running cost when idle
-  - Serverless (no cluster to manage)
-  - IAM-integrated access control via EKS Pod Identity
-  - Same S3 data lake, no data silos
+  pip install torch==2.13.0+cpu --index-url https://download.pytorch.org/whl/cpu
+  # CPU-only PyTorch. Full torch (~2 GB) but no GPU kernels.
+  # Embedding generation doesn't need GPU (it's fast on CPU for small batches).
+
+  pip install sentence-transformers==5.6.0
+  # HuggingFace library for text embeddings.
+  # Auto-downloads the embedding model (e.g., all-MiniLM-L6-v2).
+  # all-MiniLM-L6-v2: 80 MB, 384 dimensions, good quality/speed balance.
+
+Environment:
+  S3_VECTOR_BUCKET_NAME  The S3 bucket containing the vector index
+  S3_VECTOR_INDEX_NAME   The vector index to write embeddings to
+  S3_BUCKET_NAME         Source data bucket (electronics.jsonl)
+  AWS_REGION             AWS region
+
+Resources:
+  requests: { cpu: "1", memory: "2Gi" }
+  limits:   { cpu: "2", memory: "4Gi" }
+  # CPU-only. No GPU needed. Embedding 25 documents takes ~30 seconds.
 ```
 
 ---
 
-## Kubernetes Resources
+## RAG Service Deployment (rag-service.yml)
 
-### RAG Service Deployment (rag-service.yml)
-
-```
+```yaml
 Deployment: rag-service
-  serviceAccount: s3-access-sa       # IAM role for S3 Vectors access
-  image: python:3.11-slim
-  Port: 8080 | requests: {cpu:"2", memory:"4Gi"} | limits: {cpu:"2", memory:"4Gi"}
+  serviceAccount: s3-access-sa
 
-  Volume: ConfigMap rag-serve-script → /app/rag_serve.py
+  Environment:
+    ACCOUNT_ID            AWS account ID (for S3 Vectors ARN construction)
+    S3_VECTOR_BUCKET_NAME Vector database bucket
+    S3_VECTOR_INDEX_NAME  Vector index name
+    MODEL_ID              ministral (vLLM served model name)
+    MODEL_ENDPOINT        http://vllm-serve-svc:8000/v1
+    AWS_REGION            us-east-1
 
-Service: rag-service
-  type: ClusterIP | port: 80 → 8080
+  Dependencies installed at startup:
+    boto3==1.43.44          AWS SDK (S3 Vectors query_vectors API)
+    aiohttp==3.14.1         Async HTTP client for vLLM calls
+                            (async = doesn't block while waiting for LLM)
+    uvicorn==0.51.0         ASGI server for FastAPI
+    fastapi==0.139.0        Web framework (REST API endpoints)
+    sentence_transformers==5.6.0  Query embedding
+
+  Resources: { cpu: "2", memory: "4Gi" } both requests and limits
+  # Memory 4 GB: ~80 MB model + ~2 GB framework overhead + buffer.
+  # CPU 2: embedding is compute-intensive, 2 cores improves latency.
+
+  Readiness probe:
+    tcpSocket: port 8080
+    initialDelaySeconds: 30   # Wait 30s before probing (install + model download)
+    periodSeconds: 10
+    failureThreshold: 60      # 10 min grace period for model download
 ```
 
-### Gradio UI Deployment (rag-gradio-deploy.yml)
+---
 
-```
+## Gradio UI Deployment (rag-gradio-deploy.yml)
+
+```yaml
 Deployment: rag-gradio-interface
-  nodeSelector: m5.xlarge             # CPU-only node
-  image: python:3.11-slim
-  Port: 7860
-  requests: {cpu:"500m", memory:"1Gi"} | limits: {cpu:"1000m", memory:"2Gi"}
+  nodeSelector:
+    node.kubernetes.io/instance-type: "m5.xlarge"
+    # CPU-only node. Gradio is a web app, not AI compute.
 
-  Volume: ConfigMap rag-gradio-app → /app/rag-gradio-app.py
+  Container:
+    apt-get install curl                  # For health checks
+    pip install requests pandas gradio==5.49.1
+    python /app/rag-gradio-app.py         # The Gradio application
+
+  ENV:
+    RAG_SERVICE_HOST: "rag-service"       # Kubernetes DNS name
+    RAG_SERVICE_PORT: "80"                # Service port
+
+  Resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "1000m", memory: "2Gi" }
+    # 1 Gi is enough for Gradio + Python process.
+
+  Port: 7860  (Gradio's default)
 
 Service: rag-gradio-interface
-  type: ClusterIP | port: 80 → 7860
+  ClusterIP: port 80 → 7860
 
 Ingress: rag-gradio-alb
-  scheme: internet-facing
-  target-type: ip
-  healthcheck-path: /
-  success-codes: 200-302,307,404    # Gradio redirects on first load
-  load-balancer-name: rag-gradio-alb
-```
-
-### Document Processor Job (rag-document-job.yml)
-
-```
-Job: rag-document-processor
-  serviceAccount: s3-access-sa       # S3 Vectors write access
-  backoffLimit: 2
-  restartPolicy: Never
-
-  image: python:3.11-slim
-  install: boto3==1.43.43, torch==2.13.0+cpu, sentence-transformers==5.6.0
-
-  Volume: ConfigMap rag-processor-script → /app/rag-processor.py
-  requests: {cpu:"1", memory:"2Gi"} | limits: {cpu:"2", memory:"4Gi"}
+  Annotations:
+    scheme: internet-facing              Public internet access
+    target-type: ip                      Direct pod routing (no kube-proxy hop)
+    healthcheck-path: /                  Gradio root path for health checks
+    success-codes: 200-302,307,404       Gradio redirects on initial load
+    load-balancer-name: rag-gradio-alb   Deterministic ALB name
 ```
 
 ---
 
-## IAM Access (s3-access-sa)
+## Amazon S3 Vectors – How It Works
+
+```
+Vector bucket: separate from regular S3 buckets
+Vector index:  a searchable collection of vectors within a bucket
+
+Stored structure per vector:
+  {
+    "key": "electronics_001_chunk_0",    ← Unique identifier
+    "data": {
+      "float32": [0.12, -0.34, ...]      ← 384 embedding dimensions
+    },
+    "metadata": {
+      "text": "LG C3 OLED 55 inch...",  ← Original text (retrieved for prompt)
+      "source": "electronics.jsonl",
+      "doc_id": "001"
+    }
+  }
+
+Operations used:
+  put_vectors()    → Write during ingestion
+  query_vectors()  → Read during inference (similarity search)
+  
+  Both operations use IAM authentication via s3-access-sa Pod Identity.
+  No API keys, no connection strings. Standard AWS SDK calls.
+
+Pricing model:
+  Charged per vector stored + per query
+  No server to run → costs $0 when idle
+  Scales automatically with data volume
+```
+
+---
+
+## IAM Permissions for s3-access-sa
 
 ```
 ServiceAccount: s3-access-sa
-  → EKS Pod Identity Association
-  → IAM Role with permissions:
-       s3:GetObject, s3:PutObject, s3:ListBucket
-         Resource: arn:aws:s3:::${S3_VECTOR_BUCKET_NAME}/*
+→ EKS Pod Identity Association
+→ IAM Role: rag-s3-access-role
 
-       s3vectors:PutVectors, s3vectors:QueryVectors, s3vectors:GetVectors
-         Resource: arn:aws:s3vectors:::<account>:bucket/${S3_VECTOR_BUCKET_NAME}
-                   /index/${S3_VECTOR_INDEX_NAME}
-```
-
----
-
-## Component Comparison: With vs Without RAG
-
-```
-Without RAG (Module 100 – base vLLM):
-  User: "Best OLED TV under $1000?"
-  Model: Answers from training data (may be outdated)
-  Limitation: Knowledge cutoff, no product-specific data
-
-With RAG (Module 700):
-  User: "Best OLED TV under $1000?"
-  System:
-    1. Embed query → search electronics corpus
-    2. Retrieve: "LG C3 OLED 55" - $899, rated 9.2/10"
-                 "Sony A80L - $950, great HDR performance"
-    3. Augment prompt with retrieved context
-    4. Model answers with real, up-to-date product data
-  Benefit: Grounded, accurate, domain-specific responses
+Permissions required:
+  s3:GetObject                     Download documents from S3
+  s3:PutObject                     Upload processed data
+  s3:ListBucket                    List vector bucket contents
+  
+  s3vectors:PutVectors             Write embeddings during ingestion
+  s3vectors:QueryVectors           Similarity search during inference
+  s3vectors:GetVectors             Retrieve specific vectors by key
+  
+  Resources:
+    arn:aws:s3:::${S3_VECTOR_BUCKET_NAME}/*
+    arn:aws:s3vectors::<ACCOUNT_ID>:bucket/${S3_VECTOR_BUCKET_NAME}/*
 ```
 
 ---
@@ -328,25 +413,33 @@ export S3_BUCKET_NAME="genai-models-${AWS_ACCOUNT_ID}"
 export MODEL_ENDPOINT="http://vllm-serve-svc:8000/v1"
 export MODEL_ID="ministral"
 export AWS_REGION="us-east-1"
+export ACCOUNT_ID="${AWS_ACCOUNT_ID}"
 
-# Step 1: Create S3 vector index (via AWS CLI or console)
-aws s3vectors create-vector-bucket --vector-bucket-name ${S3_VECTOR_BUCKET_NAME}
-aws s3vectors create-index \
-  --vector-bucket-name ${S3_VECTOR_BUCKET_NAME} \
-  --index-name ${S3_VECTOR_INDEX_NAME} \
-  --dimension 384 --metric-type cosine
-
-# Step 2: Run document ingestion job
-envsubst < rag-document-job.yml | kubectl apply -f -
+# Step 1: Run document ingestion job
+envsubst < 700-rag/rag-document-job.yml | kubectl apply -f -
 kubectl wait --for=condition=complete job/rag-document-processor --timeout=600s
+kubectl logs job/rag-document-processor   # Verify success
 
-# Step 3: Deploy RAG service
-envsubst < rag-service.yml | kubectl apply -f -
+# Step 2: Deploy RAG service
+envsubst < 700-rag/rag-service.yml | kubectl apply -f -
 
-# Step 4: Deploy Gradio UI
-envsubst < rag-gradio-deploy.yml | kubectl apply -f -
+# Step 3: Deploy Gradio UI
+envsubst < 700-rag/rag-gradio-deploy.yml | kubectl apply -f -
+
+# Step 4: Wait for deployments
+kubectl rollout status deployment/rag-service
+kubectl rollout status deployment/rag-gradio-interface
 
 # Step 5: Get public URL
 kubectl get ingress rag-gradio-alb \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+# Step 6: Test the RAG API directly
+kubectl port-forward svc/rag-service 8080:80 &
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What TVs have the best picture quality?"}'
+
+# Clean up
+kubectl delete job rag-document-processor
 ```
